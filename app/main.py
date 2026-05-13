@@ -57,16 +57,38 @@ def modify_connect_packet(payload: bytes) -> bytes | None:
     newline_idx = data.find(b"\n")
     text_part = data[:newline_idx] if newline_idx != -1 else data
 
-    if b"\\_gd\\" in text_part:
-        return None
-
     last_quote = text_part.rfind(b'"')
     if last_quote == -1:
         return None
 
-    new_text = text_part[:last_quote] + b"\\_gd\\ag" + text_part[last_quote:]
+    core = text_part[:last_quote]
+    closing = text_part[last_quote:]
+    changed = False
+
+    # _gd: add if missing, never replace
+    if b"\\_gd\\" not in core:
+        core += b"\\_gd\\ag"
+        changed = True
+
+    # _xplay: add if missing, replace if not ag
+    xp_idx = core.find(b"\\_xplay\\")
+    if xp_idx != -1:
+        vs = xp_idx + len(b"\\_xplay\\")
+        ve = core.find(b"\\", vs)
+        ve = len(core) if ve == -1 else ve
+        if core[vs:ve] != b"ag":
+            core = core[:vs] + b"ag" + core[ve:]
+            changed = True
+    else:
+        core += b"\\_xplay\\ag"
+        changed = True
+
+    if not changed:
+        return None
+
+    new_text = core + closing
     new_data = new_text + data[newline_idx:] if newline_idx != -1 else new_text
-    log(">>> connect packet, _gd not set, inserted \\_gd\\ag")
+    log(">>> connect packet, _gd=ag, _xplay=ag")
     return payload[:4] + new_data
 
 
