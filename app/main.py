@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 
 from netfilterqueue import NetfilterQueue
-from netfilterqueue import Packet
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 from scapy.packet import Raw
@@ -13,50 +12,63 @@ HL_PORT = 29428
 AG_PORT = 29420
 
 
-def modify_packet(pkt: Packet) -> None:
-    data = pkt.get_payload()
-    packet = IP(data)
+def is_connectionless(payload: bytes) -> bool:
+    return payload.startswith(b"\xff\xff\xff\xff")
 
-    if packet.haslayer(Raw):
-        payload = packet[Raw].load
-        modified = False
 
-        if packet[IP].src == HL_INTERNAL_IP and packet[UDP].sport == HL_PORT:
-            packet[UDP].sport = AG_PORT
-            if re.search(b"valve", payload, re.IGNORECASE):
-                payload = re.sub(b"valve", b"ag", payload, flags=re.IGNORECASE)
-                packet[Raw].load = payload
+def modify_packet(pkt):
+    packet = IP(pkt.get_payload())
+
+    if not packet.haslayer(Raw):
+        pkt.accept()
+        return
+
+    payload = bytes(packet[Raw].load)
+
+    if not is_connectionless(payload):
+        pkt.accept()
+        return
+
+    modified = False
+
+    if packet.haslayer(UDP) and packet[UDP].dport == AG_PORT:
+        if b"connect" in payload:
+            if b"\\_gd\\ag" in payload:
+                payload = payload.replace(b"\\_gd\\ag", b"\\_gd\\valve")
+            elif b"\\_gd\\" not in payload:
+                payload += b"\\_gd\\valve"
+
+            packet[Raw].load = payload
             modified = True
 
-        elif packet[UDP].dport == AG_PORT:
-            packet[UDP].dport = HL_PORT
-            if b"connect" in payload and b"/_gd=valve" not in payload:
-                if b"\\" in payload:
-                    parts = payload.split(b"\\", 1)
-                    payload = parts[0] + b"\\/_gd\\valve" + b"\\" + parts[1]
-                elif b'0 "' in payload:
-                    payload = payload.replace(b'0 "', b'0 "/_gd=valve')
-                packet[Raw].load = payload
-            modified = True
+    elif packet[IP].src == HL_INTERNAL_IP and packet[UDP].sport == HL_PORT:
+        if b"Half-Life" in payload:
+            payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
 
-        if modified:
-            del packet[IP].len
-            del packet[IP].chksum
-            del packet[UDP].len
-            del packet[UDP].chksum
-            pkt.set_payload(bytes(packet))
+        if b"valve" in payload:
+            payload = payload.replace(b"valve", b"ag")
+
+        packet[UDP].sport = AG_PORT
+        packet[Raw].load = payload
+        modified = True
+
+    if modified:
+        del packet[IP].len
+        del packet[IP].chksum
+        del packet[UDP].len
+        del packet[UDP].chksum
+
+        pkt.set_payload(bytes(packet))
 
     pkt.accept()
 
 
-def main() -> None:
-    nfqueue = NetfilterQueue()
-    nfqueue.bind(1, modify_packet)
-    try:
-        nfqueue.run()
-    except KeyboardInterrupt:
-        nfqueue.unbind()
+nfqueue = NetfilterQueue()
+nfqueue.bind(1, modify_packet)
 
-
-if __name__ == "__main__":
-    main()
+try:
+    nfqueue.run()
+except KeyboardInterrupt:
+    pass
+finally:
+    nfqueue.unbind()
