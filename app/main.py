@@ -14,19 +14,27 @@ def modify_packet(pkt: Packet) -> None:
     if packet.haslayer(Raw):
         payload = packet[Raw].load
 
-        if payload.startswith(b"\xff\xff\xff\xffI"):
+        if packet[UDP].sport == 29428:
             new_payload = payload.replace(b"valve", b"ag")
-
-            if packet[UDP].sport == 29428:
-                packet[UDP].sport = 29420
-
+            packet[UDP].sport = 29420
             packet[Raw].load = new_payload
 
+        elif packet[UDP].dport == 29420:
+            if b"connect" in payload and b"/_gd=valve" not in payload:
+                new_payload = payload.replace(b'0 "', b'0 "/_gd=valve')
+                packet[Raw].load = new_payload
+
+            packet[UDP].dport = 29428
+
+        if (
+            packet[Raw].load != payload
+            or packet[UDP].sport == 29420
+            or packet[UDP].dport == 29428
+        ):
             del packet[IP].len
             del packet[IP].chksum
             del packet[UDP].len
             del packet[UDP].chksum
-
             pkt.set_payload(bytes(packet))
 
     pkt.accept()
