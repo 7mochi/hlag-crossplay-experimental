@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: A2S rewrite + connect injection (/_gd=ag)."""
 
 from __future__ import annotations
 
 import struct
+from datetime import datetime
 
 from netfilterqueue import NetfilterQueue
 from scapy.all import Raw
@@ -14,10 +14,26 @@ HL_SERVER_IP = "172.18.0.9"
 HL_PORT = 29428
 AG_PORT = 29420
 QUEUE_NUM = 1
+LOG_FILE = "/tmp/hlag-redirect.log"
 
 A2S_HEADER = b"\xff\xff\xff\xff"
 A2S_TYPE_INFO_SOURCE = 0x49
 A2S_TYPE_INFO_GOLD = 0x6D
+
+log_fh = None
+
+
+def log(msg: str):
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    if log_fh:
+        log_fh.write(line + "\n")
+        log_fh.flush()
+
+
+def hexdump(b: bytes, maxlen: int = 32) -> str:
+    return b[:maxlen].hex(" ", 1)
 
 
 def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
@@ -39,11 +55,13 @@ def modify_connect_packet(payload: bytes) -> bytes | None:
     idx = data.rfind(b"\n")
     if idx != -1:
         new_data = data[:idx] + b" /_gd=ag" + data[idx:]
+        log(">>> connect packet, injected /_gd=ag before newline, len=%d" % len(data))
         return payload[:4] + new_data
 
     idx = data.rfind(b"\x00")
     if idx != -1:
         new_data = data[:idx] + b" /_gd=ag" + data[idx:]
+        log(">>> connect packet, injected /_gd=ag before null, len=%d" % len(data))
         return payload[:4] + new_data
 
     return None
@@ -68,6 +86,11 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
+
+    log(
+        ">>> A2S SOURCE: folder '%s' -> 'ag', game '%s' -> 'HL'"
+        % (folder.decode(errors="replace"), game.decode(errors="replace")),
+    )
     return rebuilt
 
 
@@ -95,6 +118,11 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
+
+    log(
+        ">>> A2S GOLD: folder '%s' -> 'ag', game '%s' -> 'HL'"
+        % (folder.decode(errors="replace"), game.decode(errors="replace")),
+    )
     return rebuilt
 
 
@@ -116,10 +144,16 @@ def process_packet(packet):
     raw = bytes(pkt[Raw])
 
     modified = None
+
     if ip_layer.dst == HL_SERVER_IP and udp_layer.dport == HL_PORT:
-        modified = modify_connect_packet(raw)
+        if raw.startswith(A2S_HEADER):
+            modified = modify_connect_packet(raw)
+        else:
+            pass
+
     elif ip_layer.src == HL_SERVER_IP and udp_layer.sport == HL_PORT:
-        modified = modify_a2s_info_response(raw)
+        if raw.startswith(A2S_HEADER):
+            modified = modify_a2s_info_response(raw)
 
     if modified is not None and modified is not raw:
         new_pkt = IP(bytes(pkt))
@@ -129,16 +163,29 @@ def process_packet(packet):
         del new_pkt[UDP].len
         del new_pkt[UDP].chksum
         packet.set_payload(bytes(new_pkt))
+
     packet.accept()
 
 
 def main():
+    global log_fh
+    try:
+        log_fh = open(LOG_FILE, "w")
+    except Exception:
+        pass
+
+    log(">>> script up, waiting on queue %d" % QUEUE_NUM)
+
     nfqueue = NetfilterQueue()
     nfqueue.bind(QUEUE_NUM, process_packet)
     try:
         nfqueue.run()
     except KeyboardInterrupt:
+        log(">>> shutting down")
         nfqueue.unbind()
+    finally:
+        if log_fh:
+            log_fh.close()
 
 
 if __name__ == "__main__":
