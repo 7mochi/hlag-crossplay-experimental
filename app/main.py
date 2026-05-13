@@ -18,7 +18,7 @@ QUEUE_NUM = 1
 A2S_HEADER = b"\xff\xff\xff\xff"
 
 
-def read_cstring(data: bytes, offset: int) -> tuple[str, int]:
+def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     """Read a null-terminated string from data starting at offset.
     Returns (string_bytes, offset_after_null)."""
     null = data.find(b"\x00", offset)
