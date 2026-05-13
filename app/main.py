@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""HL→AG redirect: only rewrite A2S responses. Connect packets logged but untouched."""
+"""HL->AG redirect: A2S rewrite + connect injection (_gd=valve)."""
 
 from __future__ import annotations
 
 import struct
-import sys
 from datetime import datetime
 
 from netfilterqueue import NetfilterQueue
@@ -19,8 +18,8 @@ QUEUE_NUM = 1
 LOG_FILE = "/tmp/hlag-redirect.log"
 
 A2S_HEADER = b"\xff\xff\xff\xff"
-A2S_TYPE_INFO_SOURCE = 0x49  # 'I'
-A2S_TYPE_INFO_GOLD = 0x6D  # 'm'
+A2S_TYPE_INFO_SOURCE = 0x49
+A2S_TYPE_INFO_GOLD = 0x6D
 
 log_fh = None
 
@@ -45,8 +44,31 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset:null], null + 1
 
 
+def modify_connect_packet(payload: bytes) -> bytes | None:
+    """Inject \\_gd\valve inside the last info string."""
+    if not payload.startswith(A2S_HEADER):
+        return None
+    data = payload[4:]
+    if not data.startswith(b"connect "):
+        return None
+
+    if b"_gd=valve" in data or b"_gd\\valve" in data:
+        log("  -> connect: _gd=valve already present")
+        return None
+
+    last_quote = data.rfind(b'"')
+    if last_quote != -1:
+        new_data = data[:last_quote] + b"\\_gd\\valve" + data[last_quote:]
+        log(
+            f"  -> connect: INJECTED \\_gd\\valve before last quote (offset {last_quote})",
+        )
+        return payload[:4] + new_data
+
+    log("  -> connect: no quote found, appending at end")
+    return payload[:4] + data + b"\\_gd\\valve"
+
+
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
-    """Rewrite A2S_INFO in Source format (0x49)."""
     data = payload[4:]
     if len(data) < 6 or data[0] != A2S_TYPE_INFO_SOURCE:
         return None
@@ -75,7 +97,6 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
 
 
 def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
-    """Rewrite A2S_INFO in GoldSource format (0x6D)."""
     data = payload[4:]
     if len(data) < 6 or data[0] != A2S_TYPE_INFO_GOLD:
         return None
@@ -145,12 +166,14 @@ def process_packet(packet):
 
     modified_payload = None
 
-    # Entrantes: loggear pero NO modificar
     if ip_layer.dst == HL_SERVER_IP and udp_layer.dport == HL_PORT:
         if raw.startswith(A2S_HEADER):
-            log(f"  -> IN: connectionless packet (NOT modified)")
+            modified_payload = modify_connect_packet(raw)
+            if modified_payload is None:
+                log("  -> IN: connectionless (no connect match)")
+        else:
+            log("  -> IN: non-connectionless (game traffic, untouched)")
 
-    # Salientes: solo modificar A2S responses
     elif ip_layer.src == HL_SERVER_IP and udp_layer.sport == HL_PORT:
         if raw.startswith(A2S_HEADER):
             modified_payload = modify_a2s_info_response(raw)
@@ -175,12 +198,11 @@ def main():
     try:
         log_fh = open(LOG_FILE, "w")
     except Exception as e:
-        print(f"Warning: cannot open log file {LOG_FILE}: {e}")
+        print(f"Warning: cannot open {LOG_FILE}: {e}")
 
     log(
-        f"HL->AG redirect (FASE 2: A2S only) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
+        f"HL->AG redirect (A2S + connect _gd=valve) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
     )
-    log("Connect packets logged but NOT modified. Only A2S responses are rewritten.")
     print("", flush=True)
 
     nfqueue = NetfilterQueue()
