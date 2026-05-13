@@ -7,61 +7,101 @@ from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 
-
-def is_connect(payload: bytes) -> bool:
-    return payload.startswith(b"\xff\xff\xff\xffconnect")
-
-
-def process_c2s(packet):
-    ip = IP(packet.get_payload())
-
-    if not ip.haslayer(UDP):
-        packet.accept()
-        return
-
-    udp = ip[UDP]
-    payload = bytes(udp.payload)
-
-    print(f"[C->S] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport} len={len(payload)}")
-
-    if is_connect(payload):
-        print("[+] injecting /_gd=ag")
-        if b"/_gd=ag" not in payload:
-            payload = payload.replace(b"connect", b"connect /_gd=ag", 1)
-
-        ip[UDP].remove_payload()
-        ip[UDP].add_payload(payload)
-        packet.set_payload(bytes(ip))
-
-    packet.accept()
+HL_IP = "172.18.0.3"
+HL_PORT = 29428
+AG_PORT = 29420
 
 
-def process_s2c(packet):
-    ip = IP(packet.get_payload())
+def rebuild(pkt):
+    del pkt[IP].len
+    del pkt[IP].chksum
+    del pkt[UDP].len
+    del pkt[UDP].chksum
+    return pkt
+
+
+def process_incoming(packet):
+    raw = packet.get_payload()
+    ip = IP(raw)
 
     if not ip.haslayer(UDP):
         packet.accept()
         return
 
     udp = ip[UDP]
-    payload = bytes(udp.payload)
 
-    print(f"[S->C] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport} len={len(payload)}")
+    # SOLO tráfico hacia AG fake port
+    if udp.dport != AG_PORT:
+        packet.accept()
+        return
 
+    # DEBUG
+    print(f"[IN] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport}")
+
+    # 🔥 REDIRIGIR A HL REAL
+    ip.dst = HL_IP
+    udp.dport = HL_PORT
+
+    # opcional: marcar como HL compatible
+    if udp.haslayer(Raw):
+        payload = bytes(udp[Raw].load)
+
+        # injerto mínimo sin romper protocolo
+        if b"connect" in payload:
+            print("[+] connect detected -> patching _gd=ag")
+            if b"/_gd=ag" not in payload:
+                payload += b" /_gd=ag"
+
+        udp.remove_payload()
+        udp.add_payload(payload)
+
+    pkt = rebuild(ip)
+    packet.set_payload(bytes(pkt))
     packet.accept()
 
 
-def run(q, fn):
-    nfq = NetfilterQueue()
-    nfq.bind(q, fn)
-    print(f"[+] queue {q} ready")
-    nfq.run()
+def process_outgoing(packet):
+    raw = packet.get_payload()
+    ip = IP(raw)
+
+    if not ip.haslayer(UDP):
+        packet.accept()
+        return
+
+    udp = ip[UDP]
+
+    if udp.sport != HL_PORT:
+        packet.accept()
+        return
+
+    print(f"[OUT] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport}")
+
+    # 🔥 engañar cliente AG: HL responde como 29420
+    udp.sport = AG_PORT
+
+    pkt = rebuild(ip)
+    packet.set_payload(bytes(pkt))
+    packet.accept()
 
 
-threading.Thread(target=run, args=(30, process_c2s), daemon=True).start()
-threading.Thread(target=run, args=(31, process_s2c), daemon=True).start()
+def run():
+    nfq_in = NetfilterQueue()
+    nfq_out = NetfilterQueue()
 
-print("[*] HL/AG bridge running")
+    nfq_in.bind(30, process_incoming)
+    nfq_out.bind(31, process_outgoing)
 
-while True:
-    pass
+    print("[*] HL/AG bridge running (FINAL MODE)")
+
+    t1 = threading.Thread(target=nfq_in.run, daemon=True)
+    t2 = threading.Thread(target=nfq_out.run, daemon=True)
+
+    t1.start()
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+
+if __name__ == "__main__":
+    run()
