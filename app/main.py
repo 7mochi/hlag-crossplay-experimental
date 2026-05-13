@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: A2S rewrite + signon folder patching (valve -> ag)."""
+"""HL->AG redirect: rewrite A2S folder (valve->ag) and game (->HL)."""
 
 from __future__ import annotations
 
@@ -44,19 +44,6 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset:null], null + 1
 
 
-def patch_valve_to_ag(payload: bytes) -> bytes | None:
-    """Replace `valve\x00` with `ag\x00\x00\x00` (same length)."""
-    target = b"valve\x00"
-    replacement = b"ag\x00\x00\x00"
-    if target not in payload:
-        return None
-    idx = payload.index(target)
-    log(
-        f"  -> FOUND 'valve\\x00' at offset {idx} (hex context: {hexdump(payload[max(0,idx-4):idx+10], 40)})",
-    )
-    return payload[:idx] + replacement + payload[idx + len(target) :]
-
-
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
     data = payload[4:]
     if len(data) < 6 or data[0] != A2S_TYPE_INFO_SOURCE:
@@ -77,11 +64,11 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     rebuilt = A2S_HEADER + bytes([0x49, proto])
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
-    rebuilt += folder + b"\x00"
+    rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
 
-    log(f"  -> A2S: rewrote game {game!r} -> 'HL'")
+    log(f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL'")
     return rebuilt
 
 
@@ -110,11 +97,13 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += new_address + b"\x00"
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
-    rebuilt += folder + b"\x00"
+    rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
 
-    log(f"  -> A2S: rewrote game {game!r} -> 'HL', addr {address!r} -> {new_address!r}")
+    log(
+        f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL', addr {address!r} -> {new_address!r}",
+    )
     return rebuilt
 
 
@@ -127,15 +116,13 @@ def modify_a2s_info_response(payload: bytes) -> bytes | None:
 
 def process_packet(packet):
     pkt = IP(packet.get_payload())
-
-    if not pkt.haslayer(UDP):
+    if not pkt.haslayer(UDP) or not pkt.haslayer(Raw):
         packet.accept()
         return
 
     ip_layer = pkt[IP]
     udp_layer = pkt[UDP]
-    raw = bytes(pkt[Raw]) if pkt.haslayer(Raw) else b""
-
+    raw = bytes(pkt[Raw])
     src = f"{ip_layer.src}:{udp_layer.sport}"
     dst = f"{ip_layer.dst}:{udp_layer.dport}"
     direction = (
@@ -149,23 +136,9 @@ def process_packet(packet):
         f"PKT {direction}: {src} -> {dst} | len={len(raw)} | a2s={is_a2s} | hex={hexdump(raw)}",
     )
 
-    if not pkt.haslayer(Raw):
-        packet.accept()
-        return
-
     modified_payload = None
-
-    if direction == "OUT":
-        if is_a2s:
-            modified_payload = modify_a2s_info_response(raw)
-        else:
-            modified_payload = patch_valve_to_ag(raw)
-            if modified_payload:
-                log(f"  -> PATCHED valve->ag in signon packet ({len(raw)} bytes)")
-
-    elif direction == "IN":
-        if raw.startswith(A2S_HEADER):
-            log("  -> IN: connectionless (untouched)")
+    if direction == "OUT" and is_a2s:
+        modified_payload = modify_a2s_info_response(raw)
 
     if modified_payload is not None and modified_payload is not raw:
         log(f"  -> APPLYING MODIFICATION")
@@ -178,7 +151,6 @@ def process_packet(packet):
         del new_pkt[UDP].len
         del new_pkt[UDP].chksum
         packet.set_payload(bytes(new_pkt))
-
     packet.accept()
 
 
@@ -190,7 +162,7 @@ def main():
         print(f"Warning: cannot open {LOG_FILE}: {e}")
 
     log(
-        f"HL->AG redirect (A2S + signon valve->ag patch) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
+        f"HL->AG redirect (folder=ag game=HL) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
     )
     print("", flush=True)
 
