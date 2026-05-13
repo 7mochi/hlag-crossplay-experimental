@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import sys
 
 from netfilterqueue import NetfilterQueue
@@ -7,73 +8,100 @@ from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 from scapy.packet import Raw
 
-HL_INTERNAL_IP = "172.18.0.11"
-HL_PORT = 29428
-AG_PORT = 29420
-PUBLIC_IP = "149.50.143.202"
-A2S_INFO_RESPONSE = b"\x49"
+QUEUE_NUM = 0
+HL_SERVER_PORT = 29428
+AG_CLIENT_PORT = 29420
+HL_APP_ID = 70
+GAME_NAME = b"Half-Life"
 
 
-def is_connectionless(payload: bytes) -> bool:
-    return payload.startswith(b"\xff\xff\xff\xff")
+def modify_a2s_response(payload, src_port):
+    if payload[:5] != b"\xff\xff\xff\xffI":
+        return payload, src_port
+
+    offset = 5
+    # protocol (byte)
+    offset += 1
+    # name (null-terminated string)
+    offset += payload[offset:].index(b"\x00") + 1
+    # map (null-terminated string)
+    offset += payload[offset:].index(b"\x00") + 1
+    # folder (null-terminated string)
+    offset += payload[offset:].index(b"\x00") + 1
+    # game (null-terminated string) - CAMBIAR
+    game_start = offset
+    offset += payload[offset:].index(b"\x00") + 1
+    # app ID (short LE)
+    app_id_start = offset
+    offset += 2
+
+    payload = bytearray(payload)
+    # Overwrite game name
+    payload[game_start:offset] = GAME_NAME + b"\x00"
+    # Overwrite app ID
+    struct.pack_into("<H", payload, app_id_start, HL_APP_ID)
+    # Change source port to AG port so client thinks it's from port 29420
+    src_port = AG_CLIENT_PORT
+
+    return bytes(payload), src_port
 
 
-def modify_packet(pkt):
-    try:
-        packet = IP(pkt.get_payload())
-        if not packet.haslayer(UDP) or not packet.haslayer(Raw):
-            pkt.accept()
-            return
+def modify_connect_packet(payload):
+    # The connect string from AG looks like: "connect ... \n\_gd\ag"
+    # We need to ensure _gd=ag is present
+    if b"_gd" in payload:
+        return payload
+    # Append AG identifier
+    return payload + b"\\_gd\\ag"
 
-        payload = bytes(packet[Raw].load)
-        modified = False
 
-        if packet[UDP].dport == AG_PORT:
-            print(f"[IN] {packet[IP].src} -> {HL_INTERNAL_IP}:{HL_PORT}")
-            packet[IP].dst = HL_INTERNAL_IP
-            packet[UDP].dport = HL_PORT
+def callback(packet):
+    data = packet.get_payload()
+    ip_pkt = IP(data)
+
+    if not ip_pkt.haslayer(UDP):
+        packet.accept()
+        return
+
+    udp = ip_pkt[UDP]
+    sport = udp.sport
+    dport = udp.dport
+    payload = bytes(udp.payload)
+
+    modified = False
+    new_sport, new_dport = sport, dport
+
+    if dport == AG_CLIENT_PORT:
+        # Client -> Server: A2S query or connect
+        if payload.startswith(b"\xff\xff\xff\xff"):
+            if b"connect" in payload or b"challenge" in payload:
+                payload = modify_connect_packet(payload)
+                modified = True
+            # A2S query (0x54 = 'T' for Source, or "info" for GoldSrc)
+            # Just forward to HL server
+            new_dport = HL_SERVER_PORT
+            modified = True
+    elif sport == HL_SERVER_PORT and dport != AG_CLIENT_PORT:
+        # Server -> Client: A2S response
+        payload, new_sport = modify_a2s_response(payload, sport)
+        if new_sport != sport:
             modified = True
 
-            if b"connect" in payload:
-                payload = payload.replace(b"/_gd=ag", b"/_gd=valve")
-                payload = payload.replace(b"\\_gd\\ag", b"\\_gd\\valve")
-                packet[Raw].load = payload
+    if modified:
+        udp.sport = new_sport
+        udp.dport = new_dport
+        udp.len = 8 + len(payload)
+        del udp.chksum
+        ip_pkt[IP].len = ip_pkt[IP].ihl * 4 + 8 + len(payload)
+        del ip_pkt[IP].chksum
+        packet.set_payload(bytes(ip_pkt))
 
-        elif packet[UDP].sport == HL_PORT:
-            if packet[IP].src == HL_INTERNAL_IP:
-                packet[IP].src = PUBLIC_IP
-
-            packet[UDP].sport = AG_PORT
-            modified = True
-            print(f"[OUT] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}")
-
-            if (
-                is_connectionless(payload)
-                and len(payload) > 5
-                and payload[4:5] == A2S_INFO_RESPONSE
-            ):
-                payload = payload.replace(b"\x00valve\x00", b"\x00ag\x00")
-                payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
-                packet[Raw].load = payload
-
-        if modified:
-            del packet[IP].len
-            del packet[IP].chksum
-            del packet[UDP].len
-            del packet[UDP].chksum
-            pkt.set_payload(bytes(packet))
-
-        pkt.accept()
-    except Exception as e:
-        print(f"[ERR] {e}")
-        pkt.accept()
+    packet.accept()
 
 
 nfqueue = NetfilterQueue()
-nfqueue.bind(1, modify_packet)
+nfqueue.bind(QUEUE_NUM, callback)
 try:
     nfqueue.run()
 except KeyboardInterrupt:
     pass
-finally:
-    nfqueue.unbind()
