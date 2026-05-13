@@ -9,6 +9,7 @@ from scapy.packet import Raw
 HL_INTERNAL_IP = "172.18.0.11"
 HL_PORT = 29428
 AG_PORT = 29420
+CONNECTIONLESS_HEADER = b"\xff\xff\xff\xff"
 
 
 def modify_packet(pkt: Packet) -> None:
@@ -21,21 +22,19 @@ def modify_packet(pkt: Packet) -> None:
 
         if packet[IP].src == HL_INTERNAL_IP and packet[UDP].sport == HL_PORT:
             packet[UDP].sport = AG_PORT
-
-            if b"valve" in payload:
+            if CONNECTIONLESS_HEADER in payload or b"valve" in payload:
                 payload = payload.replace(b"valve", b"ag")
                 packet[Raw].load = payload
-
             modified = True
 
-        elif packet[IP].dst == HL_INTERNAL_IP and packet[UDP].dport == AG_PORT:
+        elif packet[UDP].dport == AG_PORT:
             packet[UDP].dport = HL_PORT
-
             if b"connect" in payload and b"/_gd=valve" not in payload:
                 if b'0 "' in payload:
                     payload = payload.replace(b'0 "', b'0 "/_gd=valve')
-                    packet[Raw].load = payload
-
+                else:
+                    payload = payload.replace(b"connect ", b"connect /_gd=valve ")
+                packet[Raw].load = payload
             modified = True
 
         if modified:
@@ -51,7 +50,6 @@ def modify_packet(pkt: Packet) -> None:
 def main() -> None:
     nfqueue = NetfilterQueue()
     nfqueue.bind(1, modify_packet)
-    print("Masking HL packets with AG packets... Press Ctrl+C to stop.")
     try:
         nfqueue.run()
     except KeyboardInterrupt:
