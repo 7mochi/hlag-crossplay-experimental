@@ -84,11 +84,11 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
     rebuilt += b"ag" + b"\x00"
-    # rebuilt += b"HL" + b"\x00"
+    rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
 
     log(
-        ">>> A2S SOURCE: folder '%s' -> 'ag'"
+        ">>> A2S SOURCE: folder '%s' -> 'ag', game '%s' -> 'HL'"
         % (folder.decode(errors="replace"), game.decode(errors="replace")),
     )
     return rebuilt
@@ -116,11 +116,11 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
     rebuilt += b"ag" + b"\x00"
-    # rebuilt += b"HL" + b"\x00"
+    rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
 
     log(
-        ">>> A2S GOLD: folder '%s' -> 'ag'"
+        ">>> A2S GOLD: folder '%s' -> 'ag', game '%s' -> 'HL'"
         % (folder.decode(errors="replace"), game.decode(errors="replace")),
     )
     return rebuilt
