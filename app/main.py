@@ -6,6 +6,10 @@ from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 from scapy.packet import Raw
 
+HL_INTERNAL_IP = "172.18.0.11"
+HL_PORT = 29428
+AG_PORT = 29420
+
 
 def modify_packet(pkt: Packet) -> None:
     data = pkt.get_payload()
@@ -13,24 +17,28 @@ def modify_packet(pkt: Packet) -> None:
 
     if packet.haslayer(Raw):
         payload = packet[Raw].load
+        modified = False
 
-        if packet[UDP].sport == 29428:
-            new_payload = payload.replace(b"valve", b"ag")
-            packet[UDP].sport = 29420
-            packet[Raw].load = new_payload
+        if packet[IP].src == HL_INTERNAL_IP and packet[UDP].sport == HL_PORT:
+            packet[UDP].sport = AG_PORT
 
-        elif packet[UDP].dport == 29420:
+            if b"valve" in payload:
+                payload = payload.replace(b"valve", b"ag")
+                packet[Raw].load = payload
+
+            modified = True
+
+        elif packet[IP].dst == HL_INTERNAL_IP and packet[UDP].dport == AG_PORT:
+            packet[UDP].dport = HL_PORT
+
             if b"connect" in payload and b"/_gd=valve" not in payload:
-                new_payload = payload.replace(b'0 "', b'0 "/_gd=valve')
-                packet[Raw].load = new_payload
+                if b'0 "' in payload:
+                    payload = payload.replace(b'0 "', b'0 "/_gd=valve')
+                    packet[Raw].load = payload
 
-            packet[UDP].dport = 29428
+            modified = True
 
-        if (
-            packet[Raw].load != payload
-            or packet[UDP].sport == 29420
-            or packet[UDP].dport == 29428
-        ):
+        if modified:
             del packet[IP].len
             del packet[IP].chksum
             del packet[UDP].len
