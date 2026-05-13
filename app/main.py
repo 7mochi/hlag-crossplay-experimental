@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: A2S rewrite + same-size connect injection (_gd=ag)."""
+"""HL->AG redirect: A2S rewrite + connect injection (/_gd=ag)."""
 
 from __future__ import annotations
 
 import struct
-from datetime import datetime
 
 from netfilterqueue import NetfilterQueue
 from scapy.all import Raw
@@ -15,26 +14,10 @@ HL_SERVER_IP = "172.18.0.9"
 HL_PORT = 29428
 AG_PORT = 29420
 QUEUE_NUM = 1
-LOG_FILE = "/tmp/hlag-redirect.log"
 
 A2S_HEADER = b"\xff\xff\xff\xff"
 A2S_TYPE_INFO_SOURCE = 0x49
 A2S_TYPE_INFO_GOLD = 0x6D
-
-log_fh = None
-
-
-def log(msg: str):
-    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    line = f"[{ts}] {msg}"
-    print(line, flush=True)
-    if log_fh:
-        log_fh.write(line + "\n")
-        log_fh.flush()
-
-
-def hexdump(b: bytes, maxlen: int = 64) -> str:
-    return b[:maxlen].hex(" ", 1)
 
 
 def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
@@ -45,27 +28,25 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
 
 
 def modify_connect_packet(payload: bytes) -> bytes | None:
-    """Replace \\_ha\1 with _gd=ag (same length) inside connect info string."""
     if not payload.startswith(A2S_HEADER):
         return None
     data = payload[4:]
     if not data.startswith(b"connect "):
         return None
-
-    target = b"\\_ha\\1"
-    replacement = b"_gd=ag"
-    if target not in data:
-        log(f"  -> connect: \\_ha\\1 not found, skipping")
-        return None
-
     if b"_gd=ag" in data:
-        log("  -> connect: _gd=ag already present")
         return None
 
-    idx = data.index(target)
-    new_data = data[:idx] + replacement + data[idx + len(target) :]
-    log(f"  -> connect: REPLACED \\_ha\\1 -> _gd=ag at offset {idx} (same size)")
-    return payload[:4] + new_data
+    idx = data.rfind(b"\n")
+    if idx != -1:
+        new_data = data[:idx] + b" /_gd=ag" + data[idx:]
+        return payload[:4] + new_data
+
+    idx = data.rfind(b"\x00")
+    if idx != -1:
+        new_data = data[:idx] + b" /_gd=ag" + data[idx:]
+        return payload[:4] + new_data
+
+    return None
 
 
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
@@ -81,16 +62,12 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
-    log(f"  -> A2S SOURCE: name={name!r} folder={folder!r} game={game!r}")
-
     rebuilt = A2S_HEADER + bytes([0x49, proto])
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
     rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
-
-    log(f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL'")
     return rebuilt
 
 
@@ -106,8 +83,6 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
-    log(f"  -> A2S GOLD: name={name!r} folder={folder!r} game={game!r}")
-
     addr_str = address.decode("ascii", errors="replace")
     if f":{HL_PORT}" in addr_str:
         addr_str = addr_str.replace(f":{HL_PORT}", f":{AG_PORT}")
@@ -120,8 +95,6 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += b"ag" + b"\x00"
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
-
-    log(f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL'")
     return rebuilt
 
 
@@ -141,33 +114,16 @@ def process_packet(packet):
     ip_layer = pkt[IP]
     udp_layer = pkt[UDP]
     raw = bytes(pkt[Raw])
-    src = f"{ip_layer.src}:{udp_layer.sport}"
-    dst = f"{ip_layer.dst}:{udp_layer.dport}"
-    direction = (
-        "IN"
-        if ip_layer.dst == HL_SERVER_IP
-        else "OUT" if ip_layer.src == HL_SERVER_IP else "??"
-    )
-    is_a2s = raw.startswith(A2S_HEADER)
 
-    log(
-        f"PKT {direction}: {src} -> {dst} | len={len(raw)} | a2s={is_a2s} | hex={hexdump(raw)}",
-    )
+    modified = None
+    if ip_layer.dst == HL_SERVER_IP and udp_layer.dport == HL_PORT:
+        modified = modify_connect_packet(raw)
+    elif ip_layer.src == HL_SERVER_IP and udp_layer.sport == HL_PORT:
+        modified = modify_a2s_info_response(raw)
 
-    modified_payload = None
-
-    if direction == "IN":
-        if is_a2s:
-            modified_payload = modify_connect_packet(raw)
-    elif direction == "OUT" and is_a2s:
-        modified_payload = modify_a2s_info_response(raw)
-
-    if modified_payload is not None and modified_payload is not raw:
-        log(f"  -> APPLYING MODIFICATION")
-        log(f"     BEFORE: {hexdump(raw)}")
-        log(f"     AFTER:  {hexdump(modified_payload)}")
+    if modified is not None and modified is not raw:
         new_pkt = IP(bytes(pkt))
-        new_pkt[Raw].load = modified_payload
+        new_pkt[Raw].load = modified
         del new_pkt[IP].len
         del new_pkt[IP].chksum
         del new_pkt[UDP].len
@@ -177,27 +133,12 @@ def process_packet(packet):
 
 
 def main():
-    global log_fh
-    try:
-        log_fh = open(LOG_FILE, "w")
-    except Exception as e:
-        print(f"Warning: cannot open {LOG_FILE}: {e}")
-
-    log(
-        f"HL->AG redirect (folder=ag game=HL + same-size connect _gd=ag) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
-    )
-    print("", flush=True)
-
     nfqueue = NetfilterQueue()
     nfqueue.bind(QUEUE_NUM, process_packet)
     try:
         nfqueue.run()
     except KeyboardInterrupt:
-        log("\nShutting down...")
         nfqueue.unbind()
-    finally:
-        if log_fh:
-            log_fh.close()
 
 
 if __name__ == "__main__":
