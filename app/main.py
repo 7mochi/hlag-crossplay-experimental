@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: scan signon packets for 'valve' occurrences."""
+"""HL->AG redirect: A2S rewrite + same-size connect injection (_gd=ag)."""
 
 from __future__ import annotations
 
@@ -44,23 +44,28 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset:null], null + 1
 
 
-def scan_for_valve(data: bytes):
-    """Scan full payload for 'valve' and log every occurrence with context."""
-    pos = 0
-    while True:
-        idx = data.find(b"valve", pos)
-        if idx == -1:
-            break
-        start = max(0, idx - 10)
-        end = min(len(data), idx + 30)
-        context = data[start:end]
-        after = data[idx + 5 : idx + 7]
-        log(f"  -> FOUND 'valve' at offset {idx} | context hex: {hexdump(context, 80)}")
-        log(
-            f"     context ascii: {''.join(chr(b) if 32 <= b < 127 else '.' for b in context)}",
-        )
-        log(f"     bytes after valve: {after!r} | packet len={len(data)}")
-        pos = idx + 5
+def modify_connect_packet(payload: bytes) -> bytes | None:
+    """Replace \\_ha\1 with _gd=ag (same length) inside connect info string."""
+    if not payload.startswith(A2S_HEADER):
+        return None
+    data = payload[4:]
+    if not data.startswith(b"connect "):
+        return None
+
+    target = b"\\_ha\\1"
+    replacement = b"_gd=ag"
+    if target not in data:
+        log(f"  -> connect: \\_ha\\1 not found, skipping")
+        return None
+
+    if b"_gd=ag" in data:
+        log("  -> connect: _gd=ag already present")
+        return None
+
+    idx = data.index(target)
+    new_data = data[:idx] + replacement + data[idx + len(target) :]
+    log(f"  -> connect: REPLACED \\_ha\\1 -> _gd=ag at offset {idx} (same size)")
+    return payload[:4] + new_data
 
 
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
@@ -151,16 +156,16 @@ def process_packet(packet):
 
     modified_payload = None
 
-    if direction == "OUT":
+    if direction == "IN":
         if is_a2s:
-            modified_payload = modify_a2s_info_response(raw)
-        else:
-            if b"valve" in raw:
-                log(f"  -> SIGNON SCAN: 'valve' found in {len(raw)} byte packet")
-                scan_for_valve(raw)
+            modified_payload = modify_connect_packet(raw)
+    elif direction == "OUT" and is_a2s:
+        modified_payload = modify_a2s_info_response(raw)
 
     if modified_payload is not None and modified_payload is not raw:
         log(f"  -> APPLYING MODIFICATION")
+        log(f"     BEFORE: {hexdump(raw)}")
+        log(f"     AFTER:  {hexdump(modified_payload)}")
         new_pkt = IP(bytes(pkt))
         new_pkt[Raw].load = modified_payload
         del new_pkt[IP].len
@@ -179,7 +184,7 @@ def main():
         print(f"Warning: cannot open {LOG_FILE}: {e}")
 
     log(
-        f"HL->AG redirect (SCAN MODE) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
+        f"HL->AG redirect (folder=ag game=HL + same-size connect _gd=ag) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
     )
     print("", flush=True)
 
