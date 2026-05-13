@@ -50,6 +50,11 @@ def modify_connect_packet(payload: bytes) -> bytes | None:
     data = payload[4:]
     if not data.startswith(b"connect "):
         return None
+
+    log(f"CONNECT FULL: {data!r}")
+    log(f"CONNECT HEX: {' '.join(f'{b:02x}' for b in data)}")
+    log(f"CONNECT ASCII: {''.join(chr(b) if 32 <= b < 127 else '.' for b in data)}")
+
     if b"_gd=ag" in data or b"_gd\\ag" in data:
         log("  -> connect: _gd=ag already present")
         return None
