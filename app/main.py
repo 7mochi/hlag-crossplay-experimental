@@ -23,11 +23,6 @@ def modify_packet(pkt):
         return
 
     payload = bytes(packet[Raw].load)
-
-    if not is_connectionless(payload):
-        pkt.accept()
-        return
-
     modified = False
 
     if packet[UDP].dport == AG_PORT:
@@ -36,17 +31,21 @@ def modify_packet(pkt):
         modified = True
 
         if b"connect" in payload:
-            if b"\\_gd\\ag" in payload:
-                payload = payload.replace(b"\\_gd\\ag", b"\\_gd\\valve")
-            elif b"\\_gd\\" not in payload:
-                payload = payload.rstrip(b"\x00") + b"\\_gd\\valve\x00"
+            if b"/_gd=ag" in payload:
+                payload = payload.replace(b"/_gd=ag", b"/_gd=valve")
+            elif b"/_gd=" not in payload:
+                payload = payload.rstrip(b"\x00") + b"/_gd=valve\x00"
             packet[Raw].load = payload
 
     elif packet[UDP].sport == HL_PORT:
         packet[UDP].sport = AG_PORT
         modified = True
 
-        if len(payload) > 5 and payload[4:5] == A2S_INFO_RESPONSE:
+        if (
+            is_connectionless(payload)
+            and len(payload) > 5
+            and payload[4:5] == A2S_INFO_RESPONSE
+        ):
             payload = payload.replace(b"\x00valve\x00", b"\x00ag\x00")
             payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
             packet[Raw].load = payload
