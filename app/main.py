@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: A2S rewrite + connect injection (_gd=valve)."""
+"""HL->AG redirect: A2S rewrite + signon folder patching (valve -> ag)."""
 
 from __future__ import annotations
 
@@ -44,28 +44,17 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset:null], null + 1
 
 
-def modify_connect_packet(payload: bytes) -> bytes | None:
-    """Inject \\_gd\valve inside the last info string."""
-    if not payload.startswith(A2S_HEADER):
+def patch_valve_to_ag(payload: bytes) -> bytes | None:
+    """Replace `valve\x00` with `ag\x00\x00\x00` (same length)."""
+    target = b"valve\x00"
+    replacement = b"ag\x00\x00\x00"
+    if target not in payload:
         return None
-    data = payload[4:]
-    if not data.startswith(b"connect "):
-        return None
-
-    if b"_gd=valve" in data or b"_gd\\valve" in data:
-        log("  -> connect: _gd=valve already present")
-        return None
-
-    last_quote = data.rfind(b'"')
-    if last_quote != -1:
-        new_data = data[:last_quote] + b"\\_gd\\valve" + data[last_quote:]
-        log(
-            f"  -> connect: INJECTED \\_gd\\valve before last quote (offset {last_quote})",
-        )
-        return payload[:4] + new_data
-
-    log("  -> connect: no quote found, appending at end")
-    return payload[:4] + data + b"\\_gd\\valve"
+    idx = payload.index(target)
+    log(
+        f"  -> FOUND 'valve\\x00' at offset {idx} (hex context: {hexdump(payload[max(0,idx-4):idx+10], 40)})",
+    )
+    return payload[:idx] + replacement + payload[idx + len(target) :]
 
 
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
@@ -166,17 +155,17 @@ def process_packet(packet):
 
     modified_payload = None
 
-    if ip_layer.dst == HL_SERVER_IP and udp_layer.dport == HL_PORT:
-        if raw.startswith(A2S_HEADER):
-            modified_payload = modify_connect_packet(raw)
-            if modified_payload is None:
-                log("  -> IN: connectionless (no connect match)")
-        else:
-            log("  -> IN: non-connectionless (game traffic, untouched)")
-
-    elif ip_layer.src == HL_SERVER_IP and udp_layer.sport == HL_PORT:
-        if raw.startswith(A2S_HEADER):
+    if direction == "OUT":
+        if is_a2s:
             modified_payload = modify_a2s_info_response(raw)
+        else:
+            modified_payload = patch_valve_to_ag(raw)
+            if modified_payload:
+                log(f"  -> PATCHED valve->ag in signon packet ({len(raw)} bytes)")
+
+    elif direction == "IN":
+        if raw.startswith(A2S_HEADER):
+            log("  -> IN: connectionless (untouched)")
 
     if modified_payload is not None and modified_payload is not raw:
         log(f"  -> APPLYING MODIFICATION")
@@ -201,7 +190,7 @@ def main():
         print(f"Warning: cannot open {LOG_FILE}: {e}")
 
     log(
-        f"HL->AG redirect (A2S + connect _gd=valve) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
+        f"HL->AG redirect (A2S + signon valve->ag patch) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
     )
     print("", flush=True)
 
