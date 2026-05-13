@@ -8,114 +8,89 @@ from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 
-AG_PORT = 29420
-HL_PORT = 29428
 HL_IP = "172.18.0.11"
+HL_PORT = 29428
 
 
-def is_connectionless(payload: bytes) -> bool:
-    return payload.startswith(b"\xff\xff\xff\xff")
+def is_connect(payload: bytes) -> bool:
+    return payload.startswith(b"\xff\xff\xff\xffconnect")
 
 
-def debug(pkt, ip, udp, payload, tag=""):
-    print(
-        f"[{tag}] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport} "
-        f"len={len(payload)} head={payload[:16]!r}",
+def is_a2s(payload: bytes) -> bool:
+    return payload.startswith(b"\xff\xff\xff\xffT") or payload.startswith(
+        b"\xff\xff\xff\xffU",
     )
 
 
-def process(pkt):
-    raw = pkt.get_payload()
+def process_client(packet):
+    raw = packet.get_payload()
 
-    try:
-        ip = IP(raw)
-    except Exception:
-        pkt.accept()
-        return
-
+    ip = IP(raw)
     if not ip.haslayer(UDP):
-        pkt.accept()
+        packet.accept()
         return
 
     udp = ip[UDP]
     payload = bytes(udp.payload)
 
-    # SOLO traffic relevante
-    if not is_connectionless(payload):
-        pkt.accept()
+    src = f"{ip.src}:{udp.sport}"
+    dst = f"{ip.dst}:{udp.dport}"
+
+    print(f"[C->S] {src} -> {dst} len={len(payload)} head={payload[:32]!r}")
+
+    # 🔥 CONNECT PATCH
+    if is_connect(payload):
+        print("[+] injecting /_gd=ag")
+
+        if b"/_gd=ag" not in payload:
+            payload = payload.replace(b"connect", b"connect /_gd=ag", 1)
+
+        ip[UDP].remove_payload()
+        ip[UDP].add_payload(payload)
+
+        packet.set_payload(bytes(ip))
+
+    packet.accept()
+
+
+def process_server(packet):
+    raw = packet.get_payload()
+
+    ip = IP(raw)
+    if not ip.haslayer(UDP):
+        packet.accept()
         return
 
-    # ----------------------------
-    # CLIENT -> SERVER (AG PORT)
-    # ----------------------------
-    if udp.dport == AG_PORT:
+    udp = ip[UDP]
+    payload = bytes(udp.payload)
 
-        debug(pkt, ip, udp, payload, "C->S")
+    src = f"{ip.src}:{udp.sport}"
+    dst = f"{ip.dst}:{udp.dport}"
 
-        # inject tag de compatibilidad AG
-        if b"connect" in payload and b"/_gd=ag" not in payload:
-            print("[+] injecting /_gd=ag")
-            payload += b" /_gd=ag"
+    # 🔥 A2S RESPONSE SPOOF (HL → AG disguise)
+    if is_a2s(payload):
+        # ejemplo básico de spoof (game string + port mask conceptual)
+        payload = payload.replace(b"Half-Life", b"HL/70\x00")
 
-        udp.remove_payload()
-        udp.add_payload(payload)
+        ip[UDP].remove_payload()
+        ip[UDP].add_payload(payload)
 
-        del ip.len
-        del ip.chksum
-        del udp.len
-        del udp.chksum
+        packet.set_payload(bytes(ip))
 
-        pkt.set_payload(bytes(ip))
-        pkt.accept()
-        return
-
-    # ----------------------------
-    # SERVER -> CLIENT (HL RESPONSE)
-    # ----------------------------
-    if udp.sport == HL_PORT:
-
-        debug(pkt, ip, udp, payload, "S->C")
-
-        # spoof port HL -> AG
-        try:
-            payload = payload.replace(
-                struct.pack("<H", HL_PORT),
-                struct.pack("<H", AG_PORT),
-            )
-        except Exception:
-            pass
-
-        udp.remove_payload()
-        udp.add_payload(payload)
-
-        del ip.len
-        del ip.chksum
-        del udp.len
-        del udp.chksum
-
-        pkt.set_payload(bytes(ip))
-        pkt.accept()
-        return
-
-    pkt.accept()
+    packet.accept()
 
 
-def run_queue(num: int):
+def run_queue(qnum, handler):
     nfq = NetfilterQueue()
-    nfq.bind(num, process)
-    print(f"[+] queue {num} ready")
+    nfq.bind(qnum, handler)
+    print(f"[+] queue {qnum} ready")
     nfq.run()
 
 
-def main():
-    threading.Thread(target=run_queue, args=(30,), daemon=True).start()
-    threading.Thread(target=run_queue, args=(31,), daemon=True).start()
+threading.Thread(target=run_queue, args=(30, process_client), daemon=True).start()
+threading.Thread(target=run_queue, args=(31, process_server), daemon=True).start()
 
-    print("[*] HL/AG bridge running")
+print("[*] HL/AG bridge running")
 
-    while True:
-        pass
-
-
-if __name__ == "__main__":
-    main()
+while True:
+    pass
