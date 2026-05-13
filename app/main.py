@@ -36,6 +36,10 @@ def hexdump(b: bytes, maxlen: int = 32) -> str:
     return b[:maxlen].hex(" ", 1)
 
 
+def to_ascii(b: bytes) -> str:
+    return "".join(chr(x) if 32 <= x < 127 else "." for x in b)
+
+
 def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     null = data.find(b"\x00", offset)
     if null == -1:
@@ -79,6 +83,19 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
+    log(">>> A2S SOURCE RAW: %s" % hexdump(data, len(data)))
+    log(">>> A2S SOURCE ASC: %s" % to_ascii(data))
+    log(
+        ">>> parsed: proto=%d name='%s' map='%s' folder='%s' game='%s'"
+        % (
+            proto,
+            name.decode(errors="replace"),
+            map_.decode(errors="replace"),
+            folder.decode(errors="replace"),
+            game.decode(errors="replace"),
+        ),
+    )
+
     rebuilt = A2S_HEADER + bytes([0x49, proto])
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
@@ -86,10 +103,7 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     rebuilt += game + b"\x00"
     rebuilt += data[offset:]
 
-    log(
-        ">>> A2S GOLD: folder '%s' -> 'ag', game left as '%s'"
-        % (folder.decode(errors="replace"), game.decode(errors="replace")),
-    )
+    log(">>> folder '%s' -> 'ag'" % folder.decode(errors="replace"))
     return rebuilt
 
 
@@ -105,6 +119,20 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
+    log(">>> A2S GOLD RAW: %s" % hexdump(data, len(data)))
+    log(">>> A2S GOLD ASC: %s" % to_ascii(data))
+    log(
+        ">>> parsed: address='%s' name='%s' map='%s' folder='%s' game='%s'"
+        % (
+            to_ascii(address),
+            name.decode(errors="replace"),
+            map_.decode(errors="replace"),
+            folder.decode(errors="replace"),
+            game.decode(errors="replace"),
+        ),
+    )
+    log(">>> address raw bytes: %s" % repr(address))
+
     addr_str = address.decode("ascii", errors="replace")
     if f":{HL_PORT}" in addr_str:
         addr_str = addr_str.replace(f":{HL_PORT}", f":{AG_PORT}")
@@ -115,12 +143,16 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += name + b"\x00"
     rebuilt += map_ + b"\x00"
     rebuilt += b"ag" + b"\x00"
-    rebuilt += b"HL" + b"\x00"
+    rebuilt += game + b"\x00"
     rebuilt += data[offset:]
 
     log(
-        ">>> A2S GOLD: folder '%s' -> 'ag', game '%s' -> 'HL'"
-        % (folder.decode(errors="replace"), game.decode(errors="replace")),
+        ">>> folder '%s' -> 'ag', address '%s' -> '%s'"
+        % (
+            folder.decode(errors="replace"),
+            address.decode(errors="replace"),
+            new_address.decode(errors="replace"),
+        ),
     )
     return rebuilt
 
@@ -147,8 +179,6 @@ def process_packet(packet):
     if ip_layer.dst == HL_SERVER_IP and udp_layer.dport == HL_PORT:
         if raw.startswith(A2S_HEADER):
             modified = modify_connect_packet(raw)
-        else:
-            pass
 
     elif ip_layer.src == HL_SERVER_IP and udp_layer.sport == HL_PORT:
         if raw.startswith(A2S_HEADER):
