@@ -59,15 +59,16 @@ def modify_connect_packet(payload: bytes) -> bytes | None:
         log("  -> connect: _gd=ag already present")
         return None
 
-    for suffix in (b"\n", b"\x00"):
-        idx = data.rfind(suffix)
-        if idx != -1:
-            new_data = data[:idx] + b" /_gd=ag" + data[idx:]
-            log(f"  -> connect: INJECTED /_gd=ag (suffix={suffix!r}, at offset {idx})")
-            return payload[:4] + new_data
+    last_quote = data.rfind(b'"')
+    if last_quote != -1:
+        new_data = data[:last_quote] + b"\\_gd\\ag" + data[last_quote:]
+        log(
+            f"  -> connect: INJECTED \\_gd\\ag before last quote (at offset {last_quote})",
+        )
+        return payload[:4] + new_data
 
-    log("  -> connect: no suffix found, appending at end")
-    return payload[:4] + data + b" /_gd=ag"
+    log("  -> connect: no quote found, appending at end")
+    return payload[:4] + data + b"\\_gd\\ag"
 
 
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
