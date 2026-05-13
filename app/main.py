@@ -29,9 +29,7 @@ def modify_packet(pkt):
         modified = False
 
         if packet[UDP].dport == AG_PORT:
-            print(
-                f"[IN] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}:{packet[UDP].dport}",
-            )
+            print(f"[IN] {packet[IP].src} -> {HL_INTERNAL_IP}:{HL_PORT}")
             packet[IP].dst = HL_INTERNAL_IP
             packet[UDP].dport = HL_PORT
             modified = True
@@ -42,12 +40,12 @@ def modify_packet(pkt):
                 packet[Raw].load = payload
 
         elif packet[UDP].sport == HL_PORT:
-            print(
-                f"[OUT] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}:{packet[UDP].dport}",
-            )
-            packet[IP].src = PUBLIC_IP
+            if packet[IP].src == HL_INTERNAL_IP:
+                packet[IP].src = PUBLIC_IP
+
             packet[UDP].sport = AG_PORT
             modified = True
+            print(f"[OUT] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}")
 
             if (
                 is_connectionless(payload)
