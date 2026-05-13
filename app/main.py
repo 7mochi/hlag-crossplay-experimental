@@ -1,78 +1,77 @@
 from __future__ import annotations
 
 import struct
+import threading
 
 from netfilterqueue import NetfilterQueue
 from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 
-REAL_SERVER = ("172.18.0.11", 29428)
+REAL_IP = "172.18.0.11"
+REAL_PORT = 29428
+
 FAKE_PORT = 29420
 
 
-def is_connectionless(payload):
+def is_connectionless(payload: bytes) -> bool:
     return payload.startswith(b"\xff\xff\xff\xff")
 
 
-def process(pkt):
-    raw = pkt.get_payload()
-    ip = IP(raw)
+def process(packet):
+    raw = packet.get_payload()
+
+    try:
+        ip = IP(raw)
+    except Exception:
+        packet.accept()
+        return
 
     if not ip.haslayer(UDP):
-        pkt.accept()
+        packet.accept()
         return
 
     udp = ip[UDP]
     payload = bytes(udp.payload)
 
+    #
+    # SOLO connectionless
+    #
     if not is_connectionless(payload):
-        pkt.accept()
+        packet.accept()
         return
-
-    print(f"[+] Connectionless packet {ip.src}:{udp.sport}")
 
     #
     # CLIENT -> SERVER
     #
-    if udp.dport == 29420:
+    if udp.dport == FAKE_PORT:
+
+        print(f"[CLIENT -> SERVER] " f"{ip.src}:{udp.sport} -> {ip.dst}:{udp.dport}")
 
         #
+        # AQUI MAS ADELANTE:
         # inject /_gd=ag
         #
-        if b"connect" in payload and b"/_gd=ag" not in payload:
-            print("[+] Injecting /_gd=ag")
 
-            payload += b" /_gd=ag"
-
-            udp.remove_payload()
-            udp.add_payload(payload)
-
-            del ip.len
-            del ip.chksum
-            del udp.len
-            del udp.chksum
-
-            pkt.set_payload(bytes(ip))
-
-        pkt.accept()
+        packet.accept()
         return
 
     #
     # SERVER -> CLIENT
     #
-    if udp.sport == 29428:
+    if udp.sport == REAL_PORT:
+
+        print(f"[SERVER -> CLIENT] " f"{ip.src}:{udp.sport} -> {ip.dst}:{udp.dport}")
 
         #
-        # spoof reported port
+        # Reescribir puerto reportado
         #
-        port_bytes = struct.pack("<H", 29428)
-        fake_bytes = struct.pack("<H", 29420)
+        real_port = struct.pack("<H", REAL_PORT)
+        fake_port = struct.pack("<H", FAKE_PORT)
 
-        if port_bytes in payload:
-            payload = payload.replace(port_bytes, fake_bytes)
+        if real_port in payload:
 
-            print("[+] Rewriting port 29428 -> 29420")
+            payload = payload.replace(real_port, fake_port)
 
             udp.remove_payload()
             udp.add_payload(payload)
@@ -82,20 +81,35 @@ def process(pkt):
             del udp.len
             del udp.chksum
 
-            pkt.set_payload(bytes(ip))
+            packet.set_payload(bytes(ip))
 
-        pkt.accept()
+            print(f"[+] Rewrote reported port " f"{REAL_PORT} -> {FAKE_PORT}")
+
+        packet.accept()
         return
 
-    pkt.accept()
+    packet.accept()
 
 
-nfqueue = NetfilterQueue()
-nfqueue.bind(30, process)
+def run_queue(num: int):
+    nfq = NetfilterQueue()
+    nfq.bind(num, process)
 
-print("[*] AG Spoof running")
+    print(f"[*] NFQUEUE {num} running")
+
+    try:
+        nfq.run()
+    except KeyboardInterrupt:
+        pass
+
+
+threading.Thread(target=run_queue, args=(30,), daemon=True).start()
+threading.Thread(target=run_queue, args=(31,), daemon=True).start()
+
+print("[*] AG Spoof active")
 
 try:
-    nfqueue.run()
+    while True:
+        pass
 except KeyboardInterrupt:
     print("bye")
