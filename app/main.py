@@ -101,7 +101,18 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     rebuilt += map_ + b"\x00"
     rebuilt += b"ag" + b"\x00"
     rebuilt += game + b"\x00"
-    rebuilt += data[offset:]
+
+    rest = data[offset:]
+    rest_offset = 2  # skip short AppID
+    rest_offset += 7  # players, max, bots, type, env, vis, vac
+    _, rest_offset = read_cstring(rest, rest_offset)  # version string
+    edf = rest[rest_offset]
+    rest_offset += 1
+    if edf & 0x80:
+        port_bytes = struct.pack("<H", AG_PORT)
+        rest = rest[:rest_offset] + port_bytes + rest[rest_offset + 2 :]
+        log(">>> port rewritten to %d" % AG_PORT)
+    rebuilt += rest
 
     log(">>> folder '%s' -> 'ag'" % folder.decode(errors="replace"))
     return rebuilt
