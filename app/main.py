@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from netfilterqueue import NetfilterQueue
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
@@ -16,55 +18,69 @@ def is_connectionless(payload: bytes) -> bool:
 
 
 def modify_packet(pkt):
-    packet = IP(pkt.get_payload())
+    try:
+        packet = IP(pkt.get_payload())
+        if not packet.haslayer(UDP) or not packet.haslayer(Raw):
+            pkt.accept()
+            return
 
-    if not packet.haslayer(UDP) or not packet.haslayer(Raw):
-        pkt.accept()
-        return
+        payload = bytes(packet[Raw].load)
+        modified = False
+        src_ip = packet[IP].src
+        dst_ip = packet[IP].dst
+        sport = packet[UDP].sport
+        dport = packet[UDP].dport
 
-    payload = bytes(packet[Raw].load)
-    modified = False
+        if dport == AG_PORT:
+            print(
+                f"[IN] {src_ip}:{sport} -> {dst_ip}:{dport} | Redirigiendo a {HL_INTERNAL_IP}:{HL_PORT}",
+            )
+            packet[IP].dst = HL_INTERNAL_IP
+            packet[UDP].dport = HL_PORT
+            modified = True
 
-    if packet[UDP].dport == AG_PORT:
-        packet[IP].dst = HL_INTERNAL_IP
-        packet[UDP].dport = HL_PORT
-        modified = True
-
-        if b"connect" in payload:
-            if b"/_gd=ag" in payload:
+            if b"connect" in payload:
+                print(f"  [CONN] Modificando tag _gd")
                 payload = payload.replace(b"/_gd=ag", b"/_gd=valve")
-            elif b"/_gd=" not in payload:
-                payload = payload.rstrip(b"\x00") + b"/_gd=valve\x00"
-            packet[Raw].load = payload
+                payload = payload.replace(b"\\_gd\\ag", b"\\_gd\\valve")
+                packet[Raw].load = payload
 
-    elif packet[UDP].sport == HL_PORT:
-        packet[UDP].sport = AG_PORT
-        modified = True
+        elif sport == HL_PORT:
+            print(
+                f"[OUT] {src_ip}:{sport} -> {dst_ip}:{dport} | Disfrazando como puerto {AG_PORT}",
+            )
+            packet[UDP].sport = AG_PORT
+            modified = True
 
-        if (
-            is_connectionless(payload)
-            and len(payload) > 5
-            and payload[4:5] == A2S_INFO_RESPONSE
-        ):
-            payload = payload.replace(b"\x00valve\x00", b"\x00ag\x00")
-            payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
-            packet[Raw].load = payload
+            if (
+                is_connectionless(payload)
+                and len(payload) > 5
+                and payload[4:5] == A2S_INFO_RESPONSE
+            ):
+                print(f"  [INFO] Modificando respuesta A2S_INFO (HL -> AG)")
+                payload = payload.replace(b"\x00valve\x00", b"\x00ag\x00")
+                payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
+                packet[Raw].load = payload
 
-    if modified:
-        del packet[IP].len
-        del packet[IP].chksum
-        del packet[UDP].len
-        del packet[UDP].chksum
-        pkt.set_payload(bytes(packet))
+        if modified:
+            del packet[IP].len
+            del packet[IP].chksum
+            del packet[UDP].len
+            del packet[UDP].chksum
+            pkt.set_payload(bytes(packet))
 
-    pkt.accept()
+        pkt.accept()
+    except Exception as e:
+        print(f"[ERR] {e}")
+        pkt.accept()
 
 
+print(f"Escuchando en NFQUEUE 1... Redirigiendo {AG_PORT} -> {HL_PORT}")
 nfqueue = NetfilterQueue()
 nfqueue.bind(1, modify_packet)
 try:
     nfqueue.run()
 except KeyboardInterrupt:
-    pass
+    print("\nDeteniendo...")
 finally:
     nfqueue.unbind()
