@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import struct
-
 from netfilterqueue import NetfilterQueue
-from scapy.all import IP
-from scapy.all import UDP
-from scapy.all import Raw
+from scapy.layers.inet import IP
+from scapy.layers.inet import UDP
+from scapy.packet import Raw
 
+# Configuración
 HL_SERVER_PORT = 29428
 AG_DUMMY_PORT = 29420
 
@@ -71,6 +70,7 @@ def callback(packet):
 nfqueue = NetfilterQueue()
 nfqueue.bind(0, callback)
 
+print("[*] Interceptor AG/HL corriendo...")
 try:
     nfqueue.run()
 except KeyboardInterrupt:
