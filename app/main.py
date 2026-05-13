@@ -7,6 +7,9 @@ from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 
+HL_CONTAINER_IP = "172.18.0.11"
+HL_CONTAINER_PORT = 29428
+
 
 def cb(packet):
     raw = packet.get_payload()
@@ -16,70 +19,87 @@ def cb(packet):
         packet.accept()
         return
 
-    payload = bytes(ip[UDP].payload)
+    udp = ip[UDP]
 
-    # Solo paquetes GoldSrc connectionless
+    payload = bytes(udp.payload)
+
+    #
+    # Solo GoldSrc connectionless
+    #
     if not payload.startswith(b"\xff\xff\xff\xff"):
         packet.accept()
         return
 
-    # Solo paquetes connect
+    #
+    # Solo CONNECT
+    #
     if not payload.startswith(b"\xff\xff\xff\xffconnect "):
+        #
+        # Igual redirigimos A2S packets
+        #
+        ip.dst = HL_CONTAINER_IP
+        udp.dport = HL_CONTAINER_PORT
+
+        del ip.len
+        del ip.chksum
+        del udp.len
+        del udp.chksum
+
+        packet.set_payload(bytes(ip))
+
         packet.accept()
         return
 
     idx = payload.find(b"\n")
 
     if idx == -1:
-        print("No newline found in connect packet")
         packet.accept()
         return
 
-    # Separar ASCII y blob binario
     ascii_part = payload[: idx + 1]
     binary_part = payload[idx + 1 :]
 
     print("\n==== CONNECT PACKET ====")
 
     print("\n=== ASCII ===")
-    print(ascii_part)
-
-    print("\n=== ASCII TEXT ===")
     print(ascii_part.decode("latin1", errors="ignore"))
 
-    print("\n=== BINARY ===")
-    print(binary_part[:32].hex())
-
-    print("\n=== BINARY LEN ===")
-    print(len(binary_part))
-
-    # -------------------------------------------------
-    # MODIFICACIÓN SEGURA (solo ASCII)
-    # -------------------------------------------------
-
+    #
+    # Inyectar _gd=ag
+    #
     text = ascii_part.decode("latin1", errors="ignore")
 
-    # Cambio de prueba inocente
-    text = text.replace(
-        "\\rate\\30000",
-        "\\rate\\25000",
-    )
+    if "\\_gd\\ag" not in text:
+        text = text.replace(
+            '"\n',
+            '\\_gd\\ag"\n',
+        )
 
     new_payload = text.encode("latin1") + binary_part
 
-    # Reemplazar payload UDP
-    ip[UDP].remove_payload()
-    ip[UDP].add_payload(new_payload)
+    #
+    # Reemplazar payload
+    #
+    udp.remove_payload()
+    udp.add_payload(new_payload)
 
-    # Recalcular checksums/lengths
+    #
+    # Redirigir al HL real
+    #
+    ip.dst = HL_CONTAINER_IP
+    udp.dport = HL_CONTAINER_PORT
+
+    #
+    # Recalcular checksums
+    #
     del ip.len
     del ip.chksum
-    del ip[UDP].len
-    del ip[UDP].chksum
+    del udp.len
+    del udp.chksum
 
     packet.set_payload(bytes(ip))
 
-    print("\n=== PACKET MODIFIED ===")
+    print("\n=== CONNECT REDIRECTED TO HL ===")
 
     packet.accept()
 
