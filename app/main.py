@@ -22,10 +22,10 @@ def is_a2s(payload: bytes) -> bool:
     )
 
 
-def process_client(packet):
-    raw = packet.get_payload()
+# ───────── CLIENT → SERVER ─────────
+def process_c2s(packet):
+    ip = IP(packet.get_payload())
 
-    ip = IP(raw)
     if not ip.haslayer(UDP):
         packet.accept()
         return
@@ -33,12 +33,9 @@ def process_client(packet):
     udp = ip[UDP]
     payload = bytes(udp.payload)
 
-    src = f"{ip.src}:{udp.sport}"
-    dst = f"{ip.dst}:{udp.dport}"
+    print(f"[C->S] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport} len={len(payload)}")
 
-    print(f"[C->S] {src} -> {dst} len={len(payload)} head={payload[:32]!r}")
-
-    # 🔥 CONNECT PATCH
+    # SOLO connect real
     if is_connect(payload):
         print("[+] injecting /_gd=ag")
 
@@ -53,10 +50,10 @@ def process_client(packet):
     packet.accept()
 
 
-def process_server(packet):
-    raw = packet.get_payload()
+# ───────── SERVER → CLIENT ─────────
+def process_s2c(packet):
+    ip = IP(packet.get_payload())
 
-    ip = IP(raw)
     if not ip.haslayer(UDP):
         packet.accept()
         return
@@ -64,12 +61,10 @@ def process_server(packet):
     udp = ip[UDP]
     payload = bytes(udp.payload)
 
-    src = f"{ip.src}:{udp.sport}"
-    dst = f"{ip.dst}:{udp.dport}"
+    print(f"[S->C] {ip.src}:{udp.sport} -> {ip.dst}:{udp.dport} len={len(payload)}")
 
-    # 🔥 A2S RESPONSE SPOOF (HL → AG disguise)
+    # SOLO modificar A2S
     if is_a2s(payload):
-        # ejemplo básico de spoof (game string + port mask conceptual)
         payload = payload.replace(b"Half-Life", b"HL/70\x00")
 
         ip[UDP].remove_payload()
@@ -80,15 +75,15 @@ def process_server(packet):
     packet.accept()
 
 
-def run_queue(qnum, handler):
+def run_queue(q, fn):
     nfq = NetfilterQueue()
-    nfq.bind(qnum, handler)
-    print(f"[+] queue {qnum} ready")
+    nfq.bind(q, fn)
+    print(f"[+] queue {q} ready")
     nfq.run()
 
 
-threading.Thread(target=run_queue, args=(30, process_client), daemon=True).start()
-threading.Thread(target=run_queue, args=(31, process_server), daemon=True).start()
+threading.Thread(target=run_queue, args=(30, process_c2s), daemon=True).start()
+threading.Thread(target=run_queue, args=(31, process_s2c), daemon=True).start()
 
 print("[*] HL/AG bridge running")
 
