@@ -10,6 +10,7 @@ from scapy.packet import Raw
 HL_INTERNAL_IP = "172.18.0.11"
 HL_PORT = 29428
 AG_PORT = 29420
+PUBLIC_IP = "149.50.143.202"
 A2S_INFO_RESPONSE = b"\x49"
 
 
@@ -26,29 +27,25 @@ def modify_packet(pkt):
 
         payload = bytes(packet[Raw].load)
         modified = False
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
-        sport = packet[UDP].sport
-        dport = packet[UDP].dport
 
-        if dport == AG_PORT:
+        if packet[UDP].dport == AG_PORT:
             print(
-                f"[IN] {src_ip}:{sport} -> {dst_ip}:{dport} | Redirigiendo a {HL_INTERNAL_IP}:{HL_PORT}",
+                f"[IN] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}:{packet[UDP].dport}",
             )
             packet[IP].dst = HL_INTERNAL_IP
             packet[UDP].dport = HL_PORT
             modified = True
 
             if b"connect" in payload:
-                print(f"  [CONN] Modificando tag _gd")
                 payload = payload.replace(b"/_gd=ag", b"/_gd=valve")
                 payload = payload.replace(b"\\_gd\\ag", b"\\_gd\\valve")
                 packet[Raw].load = payload
 
-        elif sport == HL_PORT:
+        elif packet[UDP].sport == HL_PORT:
             print(
-                f"[OUT] {src_ip}:{sport} -> {dst_ip}:{dport} | Disfrazando como puerto {AG_PORT}",
+                f"[OUT] {packet[IP].src}:{packet[UDP].sport} -> {packet[IP].dst}:{packet[UDP].dport}",
             )
+            packet[IP].src = PUBLIC_IP
             packet[UDP].sport = AG_PORT
             modified = True
 
@@ -57,7 +54,6 @@ def modify_packet(pkt):
                 and len(payload) > 5
                 and payload[4:5] == A2S_INFO_RESPONSE
             ):
-                print(f"  [INFO] Modificando respuesta A2S_INFO (HL -> AG)")
                 payload = payload.replace(b"\x00valve\x00", b"\x00ag\x00")
                 payload = payload.replace(b"Half-Life", b"Adrenaline Gamer")
                 packet[Raw].load = payload
@@ -75,12 +71,11 @@ def modify_packet(pkt):
         pkt.accept()
 
 
-print(f"Escuchando en NFQUEUE 1... Redirigiendo {AG_PORT} -> {HL_PORT}")
 nfqueue = NetfilterQueue()
 nfqueue.bind(1, modify_packet)
 try:
     nfqueue.run()
 except KeyboardInterrupt:
-    print("\nDeteniendo...")
+    pass
 finally:
     nfqueue.unbind()
