@@ -1,77 +1,82 @@
 from __future__ import annotations
 
+import struct
+
 from netfilterqueue import NetfilterQueue
+from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
-from scapy.packet import Raw
 
-# Configuración
-HL_SERVER_PORT = 29428
-AG_DUMMY_PORT = 29420
+HL_PORT = 29428
+AG_PORT = 29420
 
 
-def modify_a2s_response(payload):
-    if not payload.startswith(b"\xff\xff\xff\xffI"):
-        return payload
+def rewrite_a2s(payload):
+    payload = payload.replace(b"Adrenaline Gamer", b"Half-Life\x00\x00\x00\x00")
 
-    try:
-        parts = payload.split(b"\x00")
-        if len(parts) > 3:
-            parts[3] = b"ag"
-            return b"\x00".join(parts)
-    except Exception as e:
-        print(f"Error modificando A2S: {e}")
+    payload = payload.replace(struct.pack("<H", HL_PORT), struct.pack("<H", AG_PORT))
+
     return payload
 
 
-def callback(packet):
-    raw_data = packet.get_payload()
-    ip_pkt = IP(raw_data)
+def rewrite_connect(payload):
+    if b"_gd=ag" not in payload:
+        payload += b"\\_gd\\ag"
 
-    if not ip_pkt.haslayer(UDP):
-        packet.accept()
+    return payload
+
+
+def process(pkt):
+    scapy_pkt = IP(pkt.get_payload())
+
+    if not scapy_pkt.haslayer(UDP):
+        pkt.accept()
         return
 
-    udp = ip_pkt[UDP]
-    payload = bytes(udp.payload)
-    modified = False
+    udp = scapy_pkt[UDP]
 
-    if udp.dport == AG_DUMMY_PORT:
-        udp.dport = HL_SERVER_PORT
+    if not scapy_pkt.haslayer(Raw):
+        pkt.accept()
+        return
 
-        if b"connect" in payload:
-            if b"_gd\\ag" not in payload:
-                new_payload = payload.replace(b"\n", b"") + b"\\_gd\\ag\n"
-                udp.remove_payload()
-                udp.add_payload(Raw(load=new_payload))
+    payload = bytes(scapy_pkt[Raw].load)
 
-        modified = True
+    if udp.dport == AG_PORT:
+        if payload.startswith(b"\xff\xff\xff\xff"):
+            if b"connect" in payload:
+                new_payload = rewrite_connect(payload)
 
-    elif udp.sport == HL_SERVER_PORT:
-        udp.sport = AG_DUMMY_PORT
+                scapy_pkt[Raw].load = new_payload
 
-        if payload.startswith(b"\xff\xff\xff\xffI"):
-            new_payload = modify_a2s_response(payload)
-            udp.remove_payload()
-            udp.add_payload(Raw(load=new_payload))
+                del scapy_pkt[IP].len
+                del scapy_pkt[IP].chksum
+                del scapy_pkt[UDP].len
+                del scapy_pkt[UDP].chksum
 
-        modified = True
+                pkt.set_payload(bytes(scapy_pkt))
+    elif udp.sport == HL_PORT:
+        if payload.startswith(b"\xff\xff\xff\xff"):
+            new_payload = rewrite_a2s(payload)
 
-    if modified:
-        del ip_pkt[IP].len
-        del ip_pkt[IP].chksum
-        del udp.len
-        del udp.chksum
-        packet.set_payload(bytes(ip_pkt))
+            scapy_pkt[Raw].load = new_payload
 
-    packet.accept()
+            scapy_pkt[UDP].sport = AG_PORT
+
+            del scapy_pkt[IP].len
+            del scapy_pkt[IP].chksum
+            del scapy_pkt[UDP].len
+            del scapy_pkt[UDP].chksum
+
+            pkt.set_payload(bytes(scapy_pkt))
+
+    pkt.accept()
 
 
 nfqueue = NetfilterQueue()
-nfqueue.bind(0, callback)
+nfqueue.bind(10, process)
 
-print("[*] Interceptor AG/HL corriendo...")
 try:
+    print("Running...")
     nfqueue.run()
 except KeyboardInterrupt:
-    print("Detenido.")
+    pass
