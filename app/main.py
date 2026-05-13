@@ -7,113 +7,95 @@ from scapy.all import Raw
 from scapy.layers.inet import IP
 from scapy.layers.inet import UDP
 
-HL_CONTAINER_IP = "172.18.0.11"
-HL_CONTAINER_PORT = 29428
+REAL_SERVER = ("172.18.0.11", 29428)
+FAKE_PORT = 29420
 
 
-def cb(packet):
-    raw = packet.get_payload()
+def is_connectionless(payload):
+    return payload.startswith(b"\xff\xff\xff\xff")
+
+
+def process(pkt):
+    raw = pkt.get_payload()
     ip = IP(raw)
 
     if not ip.haslayer(UDP):
-        packet.accept()
+        pkt.accept()
         return
 
     udp = ip[UDP]
-
     payload = bytes(udp.payload)
 
-    #
-    # Solo GoldSrc connectionless
-    #
-    if not payload.startswith(b"\xff\xff\xff\xff"):
-        packet.accept()
+    if not is_connectionless(payload):
+        pkt.accept()
         return
 
+    print(f"[+] Connectionless packet {ip.src}:{udp.sport}")
+
     #
-    # Solo CONNECT
+    # CLIENT -> SERVER
     #
-    if not payload.startswith(b"\xff\xff\xff\xffconnect "):
+    if udp.dport == 29420:
+
         #
-        # Igual redirigimos A2S packets
+        # inject /_gd=ag
         #
-        ip.dst = HL_CONTAINER_IP
-        udp.dport = HL_CONTAINER_PORT
+        if b"connect" in payload and b"/_gd=ag" not in payload:
+            print("[+] Injecting /_gd=ag")
 
-        del ip.len
-        del ip.chksum
-        del udp.len
-        del udp.chksum
+            payload += b" /_gd=ag"
 
-        packet.set_payload(bytes(ip))
+            udp.remove_payload()
+            udp.add_payload(payload)
 
-        packet.accept()
+            del ip.len
+            del ip.chksum
+            del udp.len
+            del udp.chksum
+
+            pkt.set_payload(bytes(ip))
+
+        pkt.accept()
         return
 
-    idx = payload.find(b"\n")
+    #
+    # SERVER -> CLIENT
+    #
+    if udp.sport == 29428:
 
-    if idx == -1:
-        packet.accept()
+        #
+        # spoof reported port
+        #
+        port_bytes = struct.pack("<H", 29428)
+        fake_bytes = struct.pack("<H", 29420)
+
+        if port_bytes in payload:
+            payload = payload.replace(port_bytes, fake_bytes)
+
+            print("[+] Rewriting port 29428 -> 29420")
+
+            udp.remove_payload()
+            udp.add_payload(payload)
+
+            del ip.len
+            del ip.chksum
+            del udp.len
+            del udp.chksum
+
+            pkt.set_payload(bytes(ip))
+
+        pkt.accept()
         return
 
-    ascii_part = payload[: idx + 1]
-    binary_part = payload[idx + 1 :]
-
-    print("\n==== CONNECT PACKET ====")
-
-    print("\n=== ASCII ===")
-    print(ascii_part.decode("latin1", errors="ignore"))
-
-    #
-    # Inyectar _gd=ag
-    #
-    text = ascii_part.decode("latin1", errors="ignore")
-
-    if "\\_gd\\ag" not in text:
-        text = text.replace(
-            '"\n',
-            '\\_gd\\ag"\n',
-        )
-
-    new_payload = text.encode("latin1") + binary_part
-
-    #
-    # Reemplazar payload
-    #
-    udp.remove_payload()
-    udp.add_payload(new_payload)
-
-    #
-    # Redirigir al HL real
-    #
-    ip.dst = HL_CONTAINER_IP
-    udp.dport = HL_CONTAINER_PORT
-
-    #
-    # Recalcular checksums
-    #
-    del ip.len
-    del ip.chksum
-    del udp.len
-    del udp.chksum
-
-    packet.set_payload(bytes(ip))
-
-    print("\n=== CONNECT REDIRECTED TO HL ===")
-
-    packet.accept()
+    pkt.accept()
 
 
-nf = NetfilterQueue()
+nfqueue = NetfilterQueue()
+nfqueue.bind(30, process)
+
+print("[*] AG Spoof running")
 
 try:
-    nf.bind(30, cb)
-
-    print("Listening on NFQUEUE 30...")
-    nf.run()
-
+    nfqueue.run()
 except KeyboardInterrupt:
-    print("\nStopping...")
-
-finally:
-    nf.unbind()
+    print("bye")
