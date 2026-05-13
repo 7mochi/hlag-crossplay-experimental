@@ -49,22 +49,21 @@ def modify_connect_packet(payload: bytes) -> bytes | None:
     data = payload[4:]
     if not data.startswith(b"connect "):
         return None
-    if b"_gd=ag" in data:
+
+    newline_idx = data.find(b"\n")
+    text_part = data[:newline_idx] if newline_idx != -1 else data
+
+    if b"\\_gd\\" in text_part:
         return None
 
-    idx = data.rfind(b"\n")
-    if idx != -1:
-        new_data = data[:idx] + b" /_gd=ag" + data[idx:]
-        log(">>> connect packet, injected /_gd=ag before newline, len=%d" % len(data))
-        return payload[:4] + new_data
+    last_quote = text_part.rfind(b'"')
+    if last_quote == -1:
+        return None
 
-    idx = data.rfind(b"\x00")
-    if idx != -1:
-        new_data = data[:idx] + b" /_gd=ag" + data[idx:]
-        log(">>> connect packet, injected /_gd=ag before null, len=%d" % len(data))
-        return payload[:4] + new_data
-
-    return None
+    new_text = text_part[:last_quote] + b"\\_gd\\ag" + text_part[last_quote:]
+    new_data = new_text + data[newline_idx:] if newline_idx != -1 else new_text
+    log(">>> connect packet, _gd not set, inserted \\_gd\\ag")
+    return payload[:4] + new_data
 
 
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
