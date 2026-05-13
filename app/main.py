@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HL->AG redirect: rewrite A2S folder (valve->ag) and game (->HL)."""
+"""HL->AG redirect: scan signon packets for 'valve' occurrences."""
 
 from __future__ import annotations
 
@@ -44,6 +44,25 @@ def read_cstring(data: bytes, offset: int) -> tuple[bytes, int]:
     return data[offset:null], null + 1
 
 
+def scan_for_valve(data: bytes):
+    """Scan full payload for 'valve' and log every occurrence with context."""
+    pos = 0
+    while True:
+        idx = data.find(b"valve", pos)
+        if idx == -1:
+            break
+        start = max(0, idx - 10)
+        end = min(len(data), idx + 30)
+        context = data[start:end]
+        after = data[idx + 5 : idx + 7]
+        log(f"  -> FOUND 'valve' at offset {idx} | context hex: {hexdump(context, 80)}")
+        log(
+            f"     context ascii: {''.join(chr(b) if 32 <= b < 127 else '.' for b in context)}",
+        )
+        log(f"     bytes after valve: {after!r} | packet len={len(data)}")
+        pos = idx + 5
+
+
 def modify_a2s_info_source(payload: bytes) -> bytes | None:
     data = payload[4:]
     if len(data) < 6 or data[0] != A2S_TYPE_INFO_SOURCE:
@@ -57,9 +76,7 @@ def modify_a2s_info_source(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
-    log(
-        f"  -> A2S SOURCE: proto={proto} name={name!r} map={map_!r} folder={folder!r} game={game!r}",
-    )
+    log(f"  -> A2S SOURCE: name={name!r} folder={folder!r} game={game!r}")
 
     rebuilt = A2S_HEADER + bytes([0x49, proto])
     rebuilt += name + b"\x00"
@@ -84,9 +101,7 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     folder, offset = read_cstring(data, offset)
     game, offset = read_cstring(data, offset)
 
-    log(
-        f"  -> A2S GOLD: addr={address!r} name={name!r} map={map_!r} folder={folder!r} game={game!r}",
-    )
+    log(f"  -> A2S GOLD: name={name!r} folder={folder!r} game={game!r}")
 
     addr_str = address.decode("ascii", errors="replace")
     if f":{HL_PORT}" in addr_str:
@@ -101,9 +116,7 @@ def modify_a2s_info_goldsource(payload: bytes) -> bytes | None:
     rebuilt += b"HL" + b"\x00"
     rebuilt += data[offset:]
 
-    log(
-        f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL', addr {address!r} -> {new_address!r}",
-    )
+    log(f"  -> A2S: rewrote folder {folder!r} -> 'ag', game {game!r} -> 'HL'")
     return rebuilt
 
 
@@ -137,13 +150,17 @@ def process_packet(packet):
     )
 
     modified_payload = None
-    if direction == "OUT" and is_a2s:
-        modified_payload = modify_a2s_info_response(raw)
+
+    if direction == "OUT":
+        if is_a2s:
+            modified_payload = modify_a2s_info_response(raw)
+        else:
+            if b"valve" in raw:
+                log(f"  -> SIGNON SCAN: 'valve' found in {len(raw)} byte packet")
+                scan_for_valve(raw)
 
     if modified_payload is not None and modified_payload is not raw:
         log(f"  -> APPLYING MODIFICATION")
-        log(f"     BEFORE: {hexdump(raw)}")
-        log(f"     AFTER:  {hexdump(modified_payload)}")
         new_pkt = IP(bytes(pkt))
         new_pkt[Raw].load = modified_payload
         del new_pkt[IP].len
@@ -162,7 +179,7 @@ def main():
         print(f"Warning: cannot open {LOG_FILE}: {e}")
 
     log(
-        f"HL->AG redirect (folder=ag game=HL) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
+        f"HL->AG redirect (SCAN MODE) | HL={HL_SERVER_IP}:{HL_PORT} | AG_PORT={AG_PORT} | QUEUE={QUEUE_NUM}",
     )
     print("", flush=True)
 
